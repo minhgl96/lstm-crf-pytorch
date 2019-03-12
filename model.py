@@ -19,8 +19,8 @@ SOS = "<SOS>" # start of sequence
 EOS = "<EOS>" # end of sequence
 UNK = "<UNK>" # unknown token
 
-PAD_IDX = 0
-SOS_IDX = 1
+PAD_IDX = 0 # tag dành cho những token được pad vào câu cho đủ độ dài 
+SOS_IDX = 1 # t
 EOS_IDX = 2
 UNK_IDX = 3
 
@@ -35,6 +35,8 @@ class rnn_crf(nn.Module):
         self = self.cuda() if CUDA else self
 
     def forward(self, cx, wx, y): # for training
+        # .gt(0) thực hiện phép so sánh wx > 0 để kiểm tra xem những chỗ nào không phải padding 
+        # => cách s
         mask = wx.data.gt(0).float()
         h = self.rnn(cx, wx, mask)
         Z = self.crf.forward(h, mask)
@@ -59,6 +61,8 @@ class embed(nn.Module):
             self.word_embed = nn.Embedding(word_vocab_size, dim, padding_idx = PAD_IDX)
 
     class cnn(nn.Module):
+        # với chuỗi từ, mỗi từ là 1 chuỗi ký tự, mỗi ký tự là 1 vector -> biến thành 1 chuỗi từ, mà mỗi từ giờ sẽ có 
+        # biểu diễn là 1 vector thu được thông qua convolution nên tất cả các biểu diễn ký tự của t
         def __init__(self, dim_in, dim_out):
             super().__init__()
             self.embed_size = 50
@@ -72,6 +76,10 @@ class embed(nn.Module):
                 out_channels = self.num_featmaps, # Co
                 kernel_size = (i, self.embed_size) # (height, width)
             ) for i in self.kernel_sizes]) # num_kernels (K)
+            # =>> có tất cả 'Ci x Co' filters, tương ứng với sự ghép cặp giữa 'Ci' in-channels và
+            # 'Co' out-channels. Output của phép toán convolution đối với mỗi out-channel sẽ được tính như sau:
+            # thực hiện phép toán convolution đối với từng in-channel -> xong cộng tất cả lại. 
+            # xem thêm tại: https://pytorch.org/docs/stable/nn.html#torch.nn.Conv2d
             self.dropout = nn.Dropout(DROPOUT)
             self.fc = nn.Linear(len(self.kernel_sizes) * self.num_featmaps, dim_out)
     
@@ -79,8 +87,19 @@ class embed(nn.Module):
             x = x.view(-1, x.size(2)) # [batch_size (B) * word_seq_len (L), char_seq_len (H)]
             x = self.embed(x) # [B * L, H, embed_size (W)]
             x = x.unsqueeze(1) # [B * L, Ci, H, W]
-            h = [conv(x) for conv in self.conv] # [B * L, Co, H, 1] * K
-            h = [F.relu(k).squeeze(3) for k in h] # [B * L, Co, H] * K
+            h = [conv(x) for conv in self.conv] # [B * L, Co, H-2, 1] * K 
+            # h là 1 danh sách các feature map thu được khi thực hiện các phép toán convolution khác nhau 
+            # với các kích cỡ kernel size khác nhau, mỗi out-channel sẽ có 1 feature map có kích cỡ là [H-2, 1]
+            # sau đây sẽ thực hiện max pooling trên mỗi feature map.
+            # conv2d là thưc hiện convolution trên ảnh, tức là theo 2 chiều -cao và chiều -rộng
+            # conv1d là thưc hiện convolution trên mảng, tức là theo 1 chiều -dài 
+            # conv3d là thực hiện convolution trên hình khối 3 chiều, tức filter sẽ trượt trên cả chiều rộng, chiều cao
+            # và chiều sâu của đối tượng. 
+           
+            h = [F.relu(k).squeeze(3) for k in h] # [B * L, Co, H-2] * K
+            # max_pool1d(input, window_size) chỉ trượt trên chiều dài của input 
+            # max_pool2d trượt trên 2 chiều: chiều cao + chiều rộng 
+            # max_pool3d trượt trên 3 chiều: chiều cao + chiều rộng + chiều sâu của đối tượng 
             h = [F.max_pool1d(k, k.size(2)).squeeze(2) for k in h] # [B * L, Co] * K
             h = torch.cat(h, 1) # [B * L, Co * K]
             h = self.dropout(h)
@@ -96,8 +115,10 @@ class embed(nn.Module):
             pass
     
     def forward(self, cx, wx):
-        ch = self.char_embed(cx) if EMBED_UNIT[:4] == "char" else []
-        wh = self.word_embed(wx) if EMBED_UNIT[-4:] == "word" else []
+        # cx: charactor x
+        # 
+        ch = self.char_embed(cx) if EMBED_UNIT[:4] == "char" else [] # thực hiện convolution trên các chuỗi ký tự để lấy biểu diễn của mỗi từ
+        wh = self.word_embed(wx) if EMBED_UNIT[-4:] == "word" else [] # thực hiện embedding để lấy biểu diễn của mỗi từ 
         h = torch.cat([ch, wh], 2)
         return h
 
